@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>LoudCheck</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        background: #0f0f0f;
+        color: #eee;
+        max-width: 720px;
+        margin: 40px auto;
+      }
+      h1 {
+        color: #6ee7b7;
+      }
+      .box {
+        padding: 12px;
+        border-radius: 6px;
+        margin-bottom: 10px;
+      }
+      .green {
+        background: #064e3b;
+      }
+      .yellow {
+        background: #78350f;
+      }
+      .red {
+        background: #7f1d1d;
+      }
+      input,
+      button {
+        padding: 10px;
+        margin-top: 10px;
+        width: 100%;
+      }
+      .targets {
+        background: #1f2937;
+        padding: 12px;
+        border-radius: 6px;
+        margin-bottom: 15px;
+      }
+      .targets h2 {
+        margin-top: 0;
+        color: #3b82f6;
+      }
+      .targets p {
+        margin: 4px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>LoudCheck</h1>
+    <p>Upload your track and see if it is ready for streaming.</p>
+
+    <form id="uploadForm">
+      <input type="file" id="file" accept="audio/*" required />
+      <button type="submit" style="margin-bottom: 10px">Analyze Track</button>
+    </form>
+
+    <div id="results"></div>
+
+    <script>
+      document.getElementById("uploadForm").onsubmit = async (e) => {
+        e.preventDefault();
+
+        const fileInput = document.getElementById("file");
+        const formData = new FormData();
+        formData.append("file", fileInput.files[0]);
+
+        const res = await fetch("/analyze", {
+          method: "POST",
+          body: formData,
+        });
+
+        const data = await res.json();
+        const results = document.getElementById("results");
+        results.innerHTML = "";
+
+        if (data.status !== "ok") {
+          results.innerHTML = "<p>Error analyzing file</p>";
+          return;
+        }
+
+        // Show Targets
+        const targetsDiv = document.createElement("div");
+        targetsDiv.className = "targets";
+        targetsDiv.innerHTML = "<h2>Streaming Targets</h2>";
+        for (const key in data.targets) {
+          const p = document.createElement("p");
+          p.innerText = `${key}: ${data.targets[key]}`;
+          targetsDiv.appendChild(p);
+        }
+        results.appendChild(targetsDiv);
+
+        // Show Evaluation
+        for (const key in data.evaluation) {
+          const [status, message] = data.evaluation[key];
+          const div = document.createElement("div");
+          div.className = `box ${status}`;
+          div.innerText = message;
+          results.appendChild(div);
+        }
+      };
+    </script>
+  </body>
+</html>
