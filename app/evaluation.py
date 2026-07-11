@@ -1,29 +1,105 @@
+def strategy_explanation(strategy):
+    explanations = {
+        "preserve_dynamics": (
+            "AES guidance recommends lower distribution loudness for wide dynamic range content "
+            "to avoid playback limiter engagement."
+        ),
+        "reduce_loudness_war": (
+            "Excessive loudness offers no advantage under normalization and may reduce clarity."
+        ),
+        "risk_of_downward_normalization": (
+            "Streaming platforms will attenuate content, reducing perceived loudness."
+        ),
+        "risk_of_upward_limiting": (
+            "Upward normalization may engage device limiters, increasing distortion risk."
+        ),
+        "balanced": (
+            "Track parameters are within distribution-safe thresholds with minimal intervention expected."
+        )
+    }
+    return explanations.get(strategy, "")
+
+
+def recommend_strategy(analysis):
+    lufs = analysis.get("integrated_lufs", 0)
+    plr = analysis.get("plr", 0)
+    content = analysis.get("content_type", "")
+
+    if content == "wide_dynamic_range":
+        return "preserve_dynamics"
+    if plr < 8:
+        return "reduce_loudness_war"
+    if lufs > -13:
+        return "risk_of_downward_normalization"
+    if lufs < -16:
+        return "risk_of_upward_limiting"
+    return "balanced"
+
+
+def calculate_confidence_score(analysis):
+    """
+    Returns Compliance Confidence (0-100%) based on AES targets.
+    """
+    lufs = analysis.get("integrated_lufs", -14)
+    tp = analysis.get("true_peak_db", -1)
+    plr = analysis.get("plr", 10)
+    lra = analysis.get("loudness_range", 10)
+
+    # Score calculations (normalized 0-1)
+    lufs_score = max(0, min(1, 1 - abs(lufs + 14)/10))
+    tp_score = max(0, min(1, 1 - max(0, tp - (-1.2))/5))
+    plr_score = max(0, min(1, plr/12))
+    lra_score = max(0, min(1, 1 - abs(lra - 10)/10))
+
+    # Weighted confidence
+    confidence = (0.35*lufs_score + 0.25*tp_score + 0.2*plr_score + 0.2*lra_score) * 100
+    return round(confidence, 1)
+
+
 def evaluate_analysis(analysis: dict):
     results = {}
 
-    # Integrated LUFS
-    lufs = analysis["integrated_lufs"]
-    if -16 <= lufs <= -13:
-        results["lufs"] = ("green", f"Loudness is on target ({lufs:.1f} LUFS).")
-    elif lufs < -16:
-        results["lufs"] = ("yellow", f"Too quiet ({lufs:.1f} LUFS). Increase gain by ~{-14 - lufs:.1f} dB.")
-    else:  # lufs > -13
-        results["lufs"] = ("red", f"Too loud ({lufs:.1f} LUFS). Reduce limiter or overall gain by ~{lufs + 14:.1f} dB.")
+    # Distribution
+    sim = analysis.get("distribution_simulation", {}).get("music_streaming", {})
+    if sim:
+        if sim.get("gain_change_db", 0) < -1:
+            results["distribution"] = [
+                "yellow",
+                f"Streaming platforms will attenuate track by {abs(sim['gain_change_db']):.1f} dB."
+            ]
+        elif sim.get("will_limit", False):
+            results["distribution"] = [
+                "red",
+                "Upward normalization may trigger playback limiting."
+            ]
+        else:
+            results["distribution"] = [
+                "green",
+                "Distribution-safe loudness with minimal platform intervention expected."
+            ]
 
-    # True Peak
-    tp = analysis["true_peak_db"]
-    if tp <= -1.0:
-        results["true_peak"] = ("green", f"True peak safe ({tp:.2f} dBTP).")
-    else:
-        results["true_peak"] = ("red", f"True peak too high ({tp:.2f} dBTP). Lower ceiling to −1.0 dBTP.")
+    # PLR
+    plr = analysis.get("plr")
+    if plr is not None:
+        if plr < 8:
+            results["plr"] = ["red", f"PLR = {plr:.1f} dB. Transients likely attenuated."]
+        elif plr < 10:
+            results["plr"] = ["yellow", f"PLR = {plr:.1f} dB. Monitor peak limiting."]
+        else:
+            results["plr"] = ["green", f"PLR = {plr:.1f} dB. Healthy dynamic balance."]
 
-    # Low-end balance
-    low = analysis["frequency_balance"]["low"]
-    if low < 35:
-        results["low_end"] = ("green", f"Low-end balance good ({low:.1f}%).")
-    elif 35 <= low <= 45:
-        results["low_end"] = ("yellow", f"Low-end slightly dominant ({low:.1f}%). Consider subtle EQ reduction.")
-    else:
-        results["low_end"] = ("red", f"Low-end overpowering ({low:.1f}%). Reduce low frequencies or adjust EQ.")
+    # Strategy
+    strategy = recommend_strategy(analysis)
+    results["strategy"] = [
+        "info",
+        {
+            "recommended_strategy": strategy,
+            "aes_alignment": True,
+            "explanation": strategy_explanation(strategy)
+        }
+    ]
+
+    # Compliance Confidence Score
+    results["confidence_score"] = calculate_confidence_score(analysis)
 
     return results
