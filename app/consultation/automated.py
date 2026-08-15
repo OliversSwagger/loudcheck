@@ -98,5 +98,5 @@ def generate_consultation(result):
         "recommendation": "Automated guidance only",
         "reason": "AES-based interpretation; does not replace professional mastering review."
     })
-
+    print("DEBUG ACTIONS:", actions)
     return actions
