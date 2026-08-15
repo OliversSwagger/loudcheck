@@ -169,7 +169,7 @@ def analyze_audio(file_path: str):
     peak_linear = float(
         np.max(np.abs(y_mono))
     )
-    print("DEBUG: after peak", flush=True)
+    print("DEBUG: after peak:", peak_linear, flush=True)
     if peak_linear <= 1e-12:
 
         raise ValueError(
@@ -188,11 +188,11 @@ def analyze_audio(file_path: str):
     # ---------------------------------------------------------
 
     try:
-
+        print("DEBUG: before LUFS", flush=True)
         loudness = meter.integrated_loudness(
             y_mono
         )
-
+        print("DEBUG: LUFS:", loudness, flush=True)
     except Exception as exc:
 
         raise ValueError(
@@ -212,11 +212,11 @@ def analyze_audio(file_path: str):
     # =========================================================
 
     try:
-
+        print("DEBUG: before LRA", flush=True)
         lra = meter.loudness_range(
             y_mono
         )
-
+        print("DEBUG: LRA:", lra, flush=True)
         if lra is None or not np.isfinite(lra):
 
             lra = 0.0
