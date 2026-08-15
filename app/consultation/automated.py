@@ -75,7 +75,7 @@ def generate_consultation(result):
     #    })
     # 7. Stereo Balance
     # 7. Stereo Balance
-    stereo = result.get("stereo_balance")
+    stereo = result.get("stereo_balance", 0)
     
     print("DEBUG stereo_balance:", stereo)
     print("DEBUG stereo_balance type:", type(stereo))
