@@ -66,8 +66,17 @@ def generate_consultation(result):
         })
 
     # 7. Stereo Balance
-    stereo = result.get("stereo_balance", 0)
-    if abs(stereo) > 0.5:
+    #stereo = result.get("stereo_balance", 0)
+    #if abs(stereo) > 0.5:
+    #    actions.append({
+    #        "area": "Stereo Image",
+    #        "recommendation": "Center stereo image or adjust pan",
+    #        "reason": "Excessive imbalance may collapse in mono or mobile playback."
+    #    })
+    # 7. Stereo Balance
+    stereo = result.get("stereo_balance")
+    
+    if stereo is not None and abs(stereo) > 0.5:
         actions.append({
             "area": "Stereo Image",
             "recommendation": "Center stereo image or adjust pan",
