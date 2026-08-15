@@ -165,11 +165,11 @@ def analyze_audio(file_path: str):
     # =========================================================
     # CHECK FOR SILENCE
     # =========================================================
-
+    print("DEBUG: before peak", flush=True)
     peak_linear = float(
         np.max(np.abs(y_mono))
     )
-
+    print("DEBUG: after peak", flush=True)
     if peak_linear <= 1e-12:
 
         raise ValueError(
