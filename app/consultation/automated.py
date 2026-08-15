@@ -74,14 +74,21 @@ def generate_consultation(result):
     #        "reason": "Excessive imbalance may collapse in mono or mobile playback."
     #    })
     # 7. Stereo Balance
+    # 7. Stereo Balance
     stereo = result.get("stereo_balance")
     
-    if stereo is not None and abs(stereo) > 0.5:
-        actions.append({
-            "area": "Stereo Image",
-            "recommendation": "Center stereo image or adjust pan",
-            "reason": "Excessive imbalance may collapse in mono or mobile playback."
-        })
+    print("DEBUG stereo_balance:", stereo)
+    print("DEBUG stereo_balance type:", type(stereo))
+    
+    if stereo is not None:
+        if abs(stereo) > 0.5:
+            actions.append({
+                "area": "Stereo Image",
+                "recommendation": "Center stereo image or adjust pan",
+                "reason": "Excessive imbalance may collapse in mono or mobile playback."
+            })
+    else:
+        print("DEBUG: Mono or non-stereo track - skipping stereo balance check")
 
     # 8. Distribution-specific notes
     for platform, info in result.get("distribution_simulation", {}).items():
