@@ -1,5 +1,6 @@
 # audio_analysis.py
 
+import time
 import numpy as np
 import librosa
 import pyloudnorm as pyln
@@ -29,8 +30,26 @@ def analyze_audio(file_path: str):
     """
 
     # =========================================================
+    # TOTAL ANALYSIS TIMER
+    # =========================================================
+
+    analysis_start = time.perf_counter()
+
+    def timer(label, start):
+        elapsed = time.perf_counter() - start
+
+        print(
+            f"TIMER: {label}: {elapsed:.3f} seconds",
+            flush=True
+        )
+
+        return time.perf_counter()
+
+    # =========================================================
     # LOAD AUDIO
     # =========================================================
+
+    timer_start = time.perf_counter()
 
     try:
 
@@ -38,6 +57,11 @@ def analyze_audio(file_path: str):
             file_path,
             sr=None,
             mono=False
+        )
+
+        timer(
+            "LOAD AUDIO",
+            timer_start
         )
 
     except Exception as exc:
@@ -138,6 +162,8 @@ def analyze_audio(file_path: str):
     # CHANNEL HANDLING
     # =========================================================
 
+    timer_start = time.perf_counter()
+
     if channel_count == 1:
 
         # -----------------------------------------------------
@@ -146,16 +172,9 @@ def analyze_audio(file_path: str):
 
         stereo_available = False
 
-        # IMPORTANT:
-        #
-        # Use 0.0 instead of None.
-        #
-        # The evaluation layer performs abs(stereo_balance).
-        # Returning None causes:
-        #
-        # TypeError:
-        # bad operand type for abs(): 'NoneType'
-        #
+        # Always numeric because downstream code may
+        # perform mathematical operations on this value.
+
         stereo_balance = 0.0
 
         y_mono = y[0]
@@ -244,9 +263,16 @@ def analyze_audio(file_path: str):
             axis=0
         )
 
+    timer(
+        "CHANNEL HANDLING",
+        timer_start
+    )
+
     # =========================================================
     # VALIDATE ANALYSIS SIGNAL
     # =========================================================
+
+    timer_start = time.perf_counter()
 
     y_mono = np.asarray(
         y_mono,
@@ -306,6 +332,11 @@ def analyze_audio(file_path: str):
             "The file may be silent or empty."
         )
 
+    timer(
+        "VALIDATE + PEAK",
+        timer_start
+    )
+
     # =========================================================
     # LOUDNESS METER
     # =========================================================
@@ -317,6 +348,8 @@ def analyze_audio(file_path: str):
     # =========================================================
     # INTEGRATED LUFS
     # =========================================================
+
+    timer_start = time.perf_counter()
 
     try:
 
@@ -355,9 +388,16 @@ def analyze_audio(file_path: str):
         loudness
     )
 
+    timer(
+        "INTEGRATED LUFS",
+        timer_start
+    )
+
     # =========================================================
     # LOUDNESS RANGE
     # =========================================================
+
+    timer_start = time.perf_counter()
 
     try:
 
@@ -400,12 +440,19 @@ def analyze_audio(file_path: str):
 
         lra = 0.0
 
+    timer(
+        "LOUDNESS RANGE",
+        timer_start
+    )
+
     # =========================================================
     # TRUE PEAK
     # =========================================================
     #
     # Upsample toward >=192 kHz.
     # =========================================================
+
+    timer_start = time.perf_counter()
 
     try:
 
@@ -481,9 +528,16 @@ def analyze_audio(file_path: str):
         flush=True
     )
 
+    timer(
+        "TRUE PEAK",
+        timer_start
+    )
+
     # =========================================================
     # RMS
     # =========================================================
+
+    timer_start = time.perf_counter()
 
     try:
 
@@ -515,9 +569,16 @@ def analyze_audio(file_path: str):
             )
         )
 
+    timer(
+        "RMS",
+        timer_start
+    )
+
     # =========================================================
     # FREQUENCY ANALYSIS
     # =========================================================
+
+    timer_start = time.perf_counter()
 
     try:
 
@@ -643,9 +704,16 @@ def analyze_audio(file_path: str):
             "high": 0.0
         }
 
+    timer(
+        "FREQUENCY ANALYSIS",
+        timer_start
+    )
+
     # =========================================================
     # CLIPPING DETECTION
     # =========================================================
+
+    timer_start = time.perf_counter()
 
     clipping = bool(
         np.max(
@@ -656,9 +724,16 @@ def analyze_audio(file_path: str):
         >= 1.0
     )
 
+    timer(
+        "CLIPPING DETECTION",
+        timer_start
+    )
+
     # =========================================================
     # SHORT-TERM DYNAMIC RANGE
     # =========================================================
+
+    timer_start = time.perf_counter()
 
     hop_len = max(
         1,
@@ -679,6 +754,7 @@ def analyze_audio(file_path: str):
         ]
 
         if len(segment) == 0:
+
             continue
 
         if len(segment) < int(
@@ -727,15 +803,18 @@ def analyze_audio(file_path: str):
 
     else:
 
-        # Use 0 rather than None so the rest
-        # of LoudCheck always receives numeric
-        # analysis values.
-
         short_term_dr = 0.0
+
+    timer(
+        "SHORT-TERM DYNAMIC RANGE",
+        timer_start
+    )
 
     # =========================================================
     # PLR
     # =========================================================
+
+    timer_start = time.perf_counter()
 
     if (
         np.isfinite(
@@ -757,9 +836,16 @@ def analyze_audio(file_path: str):
 
         plr = 0.0
 
+    timer(
+        "PLR",
+        timer_start
+    )
+
     # =========================================================
     # CONTENT CLASSIFICATION
     # =========================================================
+
+    timer_start = time.perf_counter()
 
     content_type = classify_content(
         loudness,
@@ -767,9 +853,16 @@ def analyze_audio(file_path: str):
         freq_balance
     )
 
+    timer(
+        "CONTENT CLASSIFICATION",
+        timer_start
+    )
+
     # =========================================================
     # DISTRIBUTION SIMULATION
     # =========================================================
+
+    timer_start = time.perf_counter()
 
     distribution_simulation = (
         simulate_distribution(
@@ -778,9 +871,16 @@ def analyze_audio(file_path: str):
         )
     )
 
+    timer(
+        "DISTRIBUTION SIMULATION",
+        timer_start
+    )
+
     # =========================================================
     # FINAL RESULT
     # =========================================================
+
+    timer_start = time.perf_counter()
 
     result = {
 
@@ -815,7 +915,6 @@ def analyze_audio(file_path: str):
         "clipping":
             clipping,
 
-        # Always numeric.
         "stereo_balance":
             round(
                 stereo_balance,
@@ -825,7 +924,6 @@ def analyze_audio(file_path: str):
         "stereo_available":
             stereo_available,
 
-        # Always numeric.
         "short_term_dynamic_range":
             round(
                 short_term_dr,
@@ -842,9 +940,29 @@ def analyze_audio(file_path: str):
             distribution_simulation
     }
 
+    timer(
+        "RESULT BUILD",
+        timer_start
+    )
+
     print(
         "DEBUG: Final analysis result:",
         result,
+        flush=True
+    )
+
+    # =========================================================
+    # TOTAL ANALYSIS TIME
+    # =========================================================
+
+    total_time = (
+        time.perf_counter()
+        -
+        analysis_start
+    )
+
+    print(
+        f"TIMER: TOTAL ANALYSIS: {total_time:.3f} seconds",
         flush=True
     )
 
