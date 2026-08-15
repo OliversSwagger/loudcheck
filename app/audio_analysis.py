@@ -61,6 +61,7 @@ def analyze_audio(file_path: str):
         )
 
     channel_count = int(y.shape[0])
+    print("Channel count:", channel_count) # remove this later
     sample_count = int(y.shape[1])
 
     if sample_count < sr:
@@ -145,7 +146,9 @@ def analyze_audio(file_path: str):
         stereo_balance = None
 
         y_mono = np.mean(y, axis=0)
-
+    print("y_mono type:", type(y_mono))
+    print("y_mono shape:", y_mono.shape if y_mono is not None else "NONE")
+    print("y_mono is None:", y_mono is None)
     # Make sure the analysis signal is valid
     y_mono = np.asarray(
         y_mono,
