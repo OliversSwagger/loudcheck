@@ -32,49 +32,101 @@ def analyze_audio(file_path: str):
     # LOAD AUDIO
     # =========================================================
 
-    y, sr = librosa.load(
-        file_path,
-        sr=None,
-        mono=False
-    )
+    try:
+
+        y, sr = librosa.load(
+            file_path,
+            sr=None,
+            mono=False
+        )
+
+    except Exception as exc:
+
+        raise ValueError(
+            f"Unable to load audio: {exc}"
+        )
 
     if y is None:
-        raise ValueError("Unable to load audio.")
 
-    y = np.asarray(y, dtype=np.float64)
+        raise ValueError(
+            "Unable to load audio."
+        )
+
+    y = np.asarray(
+        y,
+        dtype=np.float64
+    )
 
     if y.size == 0:
-        raise ValueError("Audio file contains no audio data.")
 
-    # ---------------------------------------------------------
-    # Ensure audio is always represented as:
-    #
-    # channels x samples
-    # ---------------------------------------------------------
+        raise ValueError(
+            "Audio file contains no audio data."
+        )
+
+    # =========================================================
+    # ENSURE CHANNELS x SAMPLES
+    # =========================================================
 
     if y.ndim == 1:
-        y = np.expand_dims(y, axis=0)
+
+        y = np.expand_dims(
+            y,
+            axis=0
+        )
 
     if y.ndim != 2:
+
         raise ValueError(
             f"Unsupported audio shape: {y.shape}"
         )
 
-    channel_count = int(y.shape[0])
-    print("Channel count:", channel_count) # remove this later
-    sample_count = int(y.shape[1])
+    channel_count = int(
+        y.shape[0]
+    )
+
+    sample_count = int(
+        y.shape[1]
+    )
+
+    print(
+        "Channel count:",
+        channel_count,
+        flush=True
+    )
+
+    print(
+        "Sample count:",
+        sample_count,
+        flush=True
+    )
+
+    print(
+        "Sample rate:",
+        sr,
+        flush=True
+    )
 
     if sample_count < sr:
+
         raise ValueError(
             "Audio too short for analysis. "
             "At least one second of audio is required."
         )
 
     # =========================================================
-    # CLEAN INVALID AUDIO VALUES
+    # CLEAN INVALID VALUES
     # =========================================================
 
-    if not np.all(np.isfinite(y)):
+    if not np.all(
+        np.isfinite(y)
+    ):
+
+        print(
+            "WARNING: Invalid audio samples detected. "
+            "Replacing invalid values.",
+            flush=True
+        )
+
         y = np.nan_to_num(
             y,
             nan=0.0,
@@ -92,7 +144,19 @@ def analyze_audio(file_path: str):
         # MONO
         # -----------------------------------------------------
 
-        stereo_balance = None
+        stereo_available = False
+
+        # IMPORTANT:
+        #
+        # Use 0.0 instead of None.
+        #
+        # The evaluation layer performs abs(stereo_balance).
+        # Returning None causes:
+        #
+        # TypeError:
+        # bad operand type for abs(): 'NoneType'
+        #
+        stereo_balance = 0.0
 
         y_mono = y[0]
 
@@ -102,31 +166,55 @@ def analyze_audio(file_path: str):
         # STEREO
         # -----------------------------------------------------
 
+        stereo_available = True
+
         left = y[0]
         right = y[1]
 
         left_rms = float(
-            np.sqrt(np.mean(left ** 2))
+            np.sqrt(
+                np.mean(
+                    left ** 2
+                )
+            )
         )
 
         right_rms = float(
-            np.sqrt(np.mean(right ** 2))
+            np.sqrt(
+                np.mean(
+                    right ** 2
+                )
+            )
         )
 
-        max_rms = max(left_rms, right_rms)
+        max_rms = max(
+            left_rms,
+            right_rms
+        )
 
         if max_rms > 1e-12:
 
             stereo_balance = float(
-                (right_rms - left_rms) / max_rms
+                (
+                    right_rms
+                    -
+                    left_rms
+                )
+                /
+                max_rms
             )
 
         else:
 
             stereo_balance = 0.0
 
-        # Combine stereo channels for general analysis
-        y_mono = np.mean(y, axis=0)
+        # Combine stereo channels for
+        # general loudness analysis.
+
+        y_mono = np.mean(
+            y,
+            axis=0
+        )
 
     else:
 
@@ -137,19 +225,29 @@ def analyze_audio(file_path: str):
         # Examples:
         # 5.1
         # 7.1
-        # immersive / multichannel files
+        # immersive / multichannel
         #
-        # Do NOT simply use channel 1.
-        # Combine all available channels.
+        # Stereo balance does not apply.
+        #
+        # We still return 0.0 so downstream numerical
+        # calculations remain safe.
         # -----------------------------------------------------
 
-        stereo_balance = None
+        stereo_available = False
 
-        y_mono = np.mean(y, axis=0)
-    print("y_mono type:", type(y_mono))
-    print("y_mono shape:", y_mono.shape if y_mono is not None else "NONE")
-    print("y_mono is None:", y_mono is None)
-    # Make sure the analysis signal is valid
+        stereo_balance = 0.0
+
+        # Combine ALL channels.
+
+        y_mono = np.mean(
+            y,
+            axis=0
+        )
+
+    # =========================================================
+    # VALIDATE ANALYSIS SIGNAL
+    # =========================================================
+
     y_mono = np.asarray(
         y_mono,
         dtype=np.float64
@@ -162,14 +260,45 @@ def analyze_audio(file_path: str):
         neginf=0.0
     )
 
+    print(
+        "y_mono type:",
+        type(y_mono),
+        flush=True
+    )
+
+    print(
+        "y_mono shape:",
+        y_mono.shape,
+        flush=True
+    )
+
+    print(
+        "y_mono is None:",
+        y_mono is None,
+        flush=True
+    )
+
     # =========================================================
     # CHECK FOR SILENCE
     # =========================================================
-    print("DEBUG: before peak", flush=True)
-    peak_linear = float(
-        np.max(np.abs(y_mono))
+
+    print(
+        "DEBUG: before peak",
+        flush=True
     )
-    print("DEBUG: after peak:", peak_linear, flush=True)
+
+    peak_linear = float(
+        np.max(
+            np.abs(y_mono)
+        )
+    )
+
+    print(
+        "DEBUG: after peak:",
+        peak_linear,
+        flush=True
+    )
+
     if peak_linear <= 1e-12:
 
         raise ValueError(
@@ -181,54 +310,94 @@ def analyze_audio(file_path: str):
     # LOUDNESS METER
     # =========================================================
 
-    meter = pyln.Meter(sr)
+    meter = pyln.Meter(
+        sr
+    )
 
-    # ---------------------------------------------------------
-    # Integrated LUFS
-    # ---------------------------------------------------------
+    # =========================================================
+    # INTEGRATED LUFS
+    # =========================================================
 
     try:
-        print("DEBUG: before LUFS", flush=True)
+
+        print(
+            "DEBUG: before LUFS",
+            flush=True
+        )
+
         loudness = meter.integrated_loudness(
             y_mono
         )
-        print("DEBUG: LUFS:", loudness, flush=True)
+
+        print(
+            "DEBUG: LUFS:",
+            loudness,
+            flush=True
+        )
+
     except Exception as exc:
 
         raise ValueError(
             f"Unable to calculate integrated loudness: {exc}"
         )
 
-    if loudness is None or not np.isfinite(loudness):
+    if (
+        loudness is None
+        or
+        not np.isfinite(loudness)
+    ):
 
         raise ValueError(
             "Unable to calculate a valid integrated loudness value."
         )
 
-    loudness = float(loudness)
+    loudness = float(
+        loudness
+    )
 
     # =========================================================
     # LOUDNESS RANGE
     # =========================================================
 
     try:
-        print("DEBUG: before LRA", flush=True)
+
+        print(
+            "DEBUG: before LRA",
+            flush=True
+        )
+
         lra = meter.loudness_range(
             y_mono
         )
-        print("DEBUG: LRA:", lra, flush=True)
-        if lra is None or not np.isfinite(lra):
+
+        print(
+            "DEBUG: LRA:",
+            lra,
+            flush=True
+        )
+
+        if (
+            lra is None
+            or
+            not np.isfinite(lra)
+        ):
 
             lra = 0.0
 
         else:
 
-            lra = float(lra)
+            lra = float(
+                lra
+            )
 
-    except Exception:
+    except Exception as exc:
 
-        # Some very short, sparse or unusual files may not
-        # provide a meaningful LRA.
+        print(
+            "WARNING: LRA calculation failed:",
+            exc,
+            flush=True
+        )
+
         lra = 0.0
 
     # =========================================================
@@ -236,20 +405,29 @@ def analyze_audio(file_path: str):
     # =========================================================
     #
     # Upsample toward >=192 kHz.
-    #
-    # ceil() is used instead of int() so the target does not
-    # accidentally remain below 192 kHz.
     # =========================================================
-
-    upsample_factor = max(
-        4,
-        int(np.ceil(192000 / sr))
-    )
 
     try:
 
+        upsample_factor = max(
+            4,
+            int(
+                np.ceil(
+                    192000 / sr
+                )
+            )
+        )
+
         target_length = int(
-            len(y_mono) * upsample_factor
+            len(y_mono)
+            *
+            upsample_factor
+        )
+
+        print(
+            "DEBUG: True peak upsample factor:",
+            upsample_factor,
+            flush=True
         )
 
         y_upsampled = resample(
@@ -270,7 +448,11 @@ def analyze_audio(file_path: str):
         )
 
         peak_linear_upsampled = float(
-            np.max(np.abs(y_upsampled))
+            np.max(
+                np.abs(
+                    y_upsampled
+                )
+            )
         )
 
         if peak_linear_upsampled <= 1e-12:
@@ -280,7 +462,9 @@ def analyze_audio(file_path: str):
         else:
 
             true_peak_db = float(
-                20 * np.log10(
+                20
+                *
+                np.log10(
                     peak_linear_upsampled
                 )
             )
@@ -291,17 +475,31 @@ def analyze_audio(file_path: str):
             f"Unable to calculate true peak: {exc}"
         )
 
+    print(
+        "DEBUG: True Peak:",
+        true_peak_db,
+        flush=True
+    )
+
     # =========================================================
     # RMS
     # =========================================================
 
-    rms = float(
-        np.sqrt(
-            np.mean(
-                y_mono ** 2
+    try:
+
+        rms = float(
+            np.sqrt(
+                np.mean(
+                    y_mono ** 2
+                )
             )
         )
-    )
+
+    except Exception as exc:
+
+        raise ValueError(
+            f"Unable to calculate RMS: {exc}"
+        )
 
     if rms <= 1e-12:
 
@@ -310,7 +508,11 @@ def analyze_audio(file_path: str):
     else:
 
         rms_db = float(
-            20 * np.log10(rms)
+            20
+            *
+            np.log10(
+                rms
+            )
         )
 
     # =========================================================
@@ -320,18 +522,18 @@ def analyze_audio(file_path: str):
     try:
 
         stft = np.abs(
-            librosa.stft(y_mono)
+            librosa.stft(
+                y_mono
+            )
         )
 
         freqs = librosa.fft_frequencies(
             sr=sr
         )
 
-        # -----------------------------------------------------
-        # Frequency masks
-        # -----------------------------------------------------
-
-        low_mask = freqs < 80
+        low_mask = (
+            freqs < 80
+        )
 
         mid_mask = (
             (freqs >= 80)
@@ -339,35 +541,47 @@ def analyze_audio(file_path: str):
             (freqs < 2000)
         )
 
-        high_mask = freqs >= 2000
-
-        # -----------------------------------------------------
-        # Calculate energy/activity for each band
-        # -----------------------------------------------------
+        high_mask = (
+            freqs >= 2000
+        )
 
         low = (
-            float(np.mean(stft[low_mask]))
+            float(
+                np.mean(
+                    stft[low_mask]
+                )
+            )
             if np.any(low_mask)
             else 0.0
         )
 
         mid = (
-            float(np.mean(stft[mid_mask]))
+            float(
+                np.mean(
+                    stft[mid_mask]
+                )
+            )
             if np.any(mid_mask)
             else 0.0
         )
 
         high = (
-            float(np.mean(stft[high_mask]))
+            float(
+                np.mean(
+                    stft[high_mask]
+                )
+            )
             if np.any(high_mask)
             else 0.0
         )
 
-        total = low + mid + high
-
-        # -----------------------------------------------------
-        # Prevent division by zero
-        # -----------------------------------------------------
+        total = (
+            low
+            +
+            mid
+            +
+            high
+        )
 
         if total <= 1e-12:
 
@@ -380,26 +594,49 @@ def analyze_audio(file_path: str):
         else:
 
             freq_balance = {
+
                 "low": round(
-                    (low / total) * 100,
+                    (
+                        low
+                        /
+                        total
+                    )
+                    *
+                    100,
                     1
                 ),
 
                 "mid": round(
-                    (mid / total) * 100,
+                    (
+                        mid
+                        /
+                        total
+                    )
+                    *
+                    100,
                     1
                 ),
 
                 "high": round(
-                    (high / total) * 100,
+                    (
+                        high
+                        /
+                        total
+                    )
+                    *
+                    100,
                     1
                 )
             }
 
-    except Exception:
+    except Exception as exc:
 
-        # Frequency analysis should not cause the entire
-        # LoudCheck analysis to fail.
+        print(
+            "WARNING: Frequency analysis failed:",
+            exc,
+            flush=True
+        )
+
         freq_balance = {
             "low": 0.0,
             "mid": 0.0,
@@ -412,18 +649,15 @@ def analyze_audio(file_path: str):
 
     clipping = bool(
         np.max(
-            np.abs(y_mono)
-        ) >= 1.0
+            np.abs(
+                y_mono
+            )
+        )
+        >= 1.0
     )
 
     # =========================================================
     # SHORT-TERM DYNAMIC RANGE
-    # =========================================================
-    #
-    # Approximation using 1-second LUFS windows.
-    #
-    # Windows that cannot produce valid LUFS values are
-    # ignored.
     # =========================================================
 
     hop_len = max(
@@ -440,15 +674,17 @@ def analyze_audio(file_path: str):
     ):
 
         segment = y_mono[
-            start:start + hop_len
+            start:
+            start + hop_len
         ]
 
         if len(segment) == 0:
             continue
 
-        # Very small segments are not useful for loudness
-        # calculations.
-        if len(segment) < int(sr * 0.4):
+        if len(segment) < int(
+            sr * 0.4
+        ):
+
             continue
 
         try:
@@ -461,11 +697,16 @@ def analyze_audio(file_path: str):
 
             if (
                 segment_lufs is not None
-                and np.isfinite(segment_lufs)
+                and
+                np.isfinite(
+                    segment_lufs
+                )
             ):
 
                 window_lufs.append(
-                    float(segment_lufs)
+                    float(
+                        segment_lufs
+                    )
                 )
 
         except Exception:
@@ -475,29 +716,41 @@ def analyze_audio(file_path: str):
     if len(window_lufs) >= 2:
 
         short_term_dr = float(
-            max(window_lufs)
+            max(
+                window_lufs
+            )
             -
-            min(window_lufs)
+            min(
+                window_lufs
+            )
         )
 
     else:
 
-        short_term_dr = None
+        # Use 0 rather than None so the rest
+        # of LoudCheck always receives numeric
+        # analysis values.
+
+        short_term_dr = 0.0
 
     # =========================================================
     # PLR
     # =========================================================
-    #
-    # Peak-to-Loudness Ratio
-    # =========================================================
 
     if (
-        np.isfinite(true_peak_db)
-        and np.isfinite(loudness)
+        np.isfinite(
+            true_peak_db
+        )
+        and
+        np.isfinite(
+            loudness
+        )
     ):
 
         plr = float(
-            true_peak_db - loudness
+            true_peak_db
+            -
+            loudness
         )
 
     else:
@@ -518,16 +771,18 @@ def analyze_audio(file_path: str):
     # DISTRIBUTION SIMULATION
     # =========================================================
 
-    distribution_simulation = simulate_distribution(
-        loudness,
-        true_peak_db
+    distribution_simulation = (
+        simulate_distribution(
+            loudness,
+            true_peak_db
+        )
     )
 
     # =========================================================
     # FINAL RESULT
     # =========================================================
 
-    return {
+    result = {
 
         "integrated_lufs": round(
             loudness,
@@ -554,35 +809,46 @@ def analyze_audio(file_path: str):
             2
         ),
 
-        "frequency_balance": freq_balance,
+        "frequency_balance":
+            freq_balance,
 
-        "clipping": clipping,
+        "clipping":
+            clipping,
 
-        "stereo_balance": (
-            None
-            if stereo_balance is None
-            else round(
+        # Always numeric.
+        "stereo_balance":
+            round(
                 stereo_balance,
                 2
-            )
-        ),
+            ),
 
-        "short_term_dynamic_range": (
-            None
-            if short_term_dr is None
-            else round(
+        "stereo_available":
+            stereo_available,
+
+        # Always numeric.
+        "short_term_dynamic_range":
+            round(
                 short_term_dr,
                 2
-            )
-        ),
+            ),
 
-        "content_type": content_type,
+        "content_type":
+            content_type,
 
-        "channel_count": channel_count,
+        "channel_count":
+            channel_count,
 
         "distribution_simulation":
             distribution_simulation
     }
+
+    print(
+        "DEBUG: Final analysis result:",
+        result,
+        flush=True
+    )
+
+    return result
 
 
 # =============================================================
@@ -599,7 +865,7 @@ def classify_content(
     AES-inspired heuristic classification.
 
     This is an analytical heuristic and should not be
-    presented as an official AES certification.
+    presented as official AES certification.
     """
 
     if lra > 14:
@@ -608,14 +874,16 @@ def classify_content(
 
     if (
         freq_balance["mid"] > 45
-        and freq_balance["low"] < 25
+        and
+        freq_balance["low"] < 25
     ):
 
         return "speech_dominant"
 
     if (
         loudness > -16
-        and lra < 8
+        and
+        lra < 8
     ):
 
         return "dense_music"
@@ -647,25 +915,34 @@ def simulate_distribution(
     # Reference: -14 LUFS
     # =========================================================
 
-    delta = -14 - lufs
+    delta = (
+        -14
+        -
+        lufs
+    )
 
     predicted_peak = (
-        true_peak + delta
+        true_peak
+        +
+        delta
     )
 
     will_limit = bool(
         delta > 0
-        and predicted_peak > -1.0
+        and
+        predicted_peak > -1.0
     )
 
     platforms["music_streaming"] = {
 
-        "gain_change_db": round(
-            delta,
-            2
-        ),
+        "gain_change_db":
+            round(
+                delta,
+                2
+            ),
 
-        "will_limit": will_limit
+        "will_limit":
+            will_limit
     }
 
     # =========================================================
@@ -673,25 +950,34 @@ def simulate_distribution(
     # Reference: -18 LUFS
     # =========================================================
 
-    delta_radio = -18 - lufs
+    delta_radio = (
+        -18
+        -
+        lufs
+    )
 
     predicted_radio_peak = (
-        true_peak + delta_radio
+        true_peak
+        +
+        delta_radio
     )
 
     will_limit_radio = bool(
         delta_radio > 0
-        and predicted_radio_peak > -1.0
+        and
+        predicted_radio_peak > -1.0
     )
 
     platforms["speech_streaming"] = {
 
-        "gain_change_db": round(
-            delta_radio,
-            2
-        ),
+        "gain_change_db":
+            round(
+                delta_radio,
+                2
+            ),
 
-        "will_limit": will_limit_radio
+        "will_limit":
+            will_limit_radio
     }
 
     return platforms
