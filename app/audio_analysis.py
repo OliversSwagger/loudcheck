@@ -16,23 +16,68 @@ def analyze_audio(file_path: str):
         y = np.expand_dims(y, axis=0)
 
     # -----------------------
-    # Stereo balance (L-R)
+    # Stereo balance (L-R) Removed on 20260815
     # -----------------------
-    if y.shape[0] == 2:
-        left_rms = np.sqrt(np.mean(y[0] ** 2))
-        right_rms = np.sqrt(np.mean(y[1] ** 2))
-        stereo_balance = float((right_rms - left_rms) / max(left_rms, right_rms))
-        y_mono = np.mean(y, axis=0)
-    else:
-        stereo_balance = None
-        y_mono = y[0]
+    #if y.shape[0] == 2:
+    #    left_rms = np.sqrt(np.mean(y[0] ** 2))
+    #    right_rms = np.sqrt(np.mean(y[1] ** 2))
+    #    stereo_balance = float((right_rms - left_rms) / max(left_rms, right_rms))
+    #    y_mono = np.mean(y, axis=0)
+    #else:
+    #    stereo_balance = None
+    #    y_mono = y[0]
 
     # -----------------------
-    # Loudness meter
+    # Channel handling Added on 20260815
     # -----------------------
+    channel_count = y.shape[0]
+    
+    if channel_count == 1:
+        # Mono
+        stereo_balance = None
+        y_mono = y[0]
+    
+    elif channel_count == 2:
+        # Stereo
+        left_rms = np.sqrt(np.mean(y[0] ** 2))
+        right_rms = np.sqrt(np.mean(y[1] ** 2))
+    
+        max_rms = max(left_rms, right_rms)
+    
+        if max_rms > 1e-12:
+            stereo_balance = float(
+                (right_rms - left_rms) / max_rms
+            )
+        else:
+            stereo_balance = 0.0
+    
+        # Combine both channels for loudness/frequency analysis
+        y_mono = np.mean(y, axis=0)
+    
+    else:
+        # Multichannel audio (3+ channels)
+        stereo_balance = None
+    
+        # Combine ALL channels instead of using only channel 1
+        y_mono = np.mean(y, axis=0)
+
+    # -----------------------
+    # Loudness meter removed meter, loudness and lra 20260815
+    # -----------------------
+    # meter = pyln.Meter(sr)
+    # loudness = meter.integrated_loudness(y_mono)
+    # lra = meter.loudness_range(y_mono)
     meter = pyln.Meter(sr)
     loudness = meter.integrated_loudness(y_mono)
-    lra = meter.loudness_range(y_mono)
+    if loudness is None or not np.isfinite(loudness):
+        raise ValueError("Unable to calculate integrated loudness for this audio.")
+    try:
+        lra = meter.loudness_range(y_mono)
+
+        if lra is None or not np.isfinite(lra):
+            lra = 0.0
+    except Exception:
+        lra = 0.0
 
     # -----------------------
     # True Peak: upsample AES-recommended ≥192 kHz
@@ -49,15 +94,43 @@ def analyze_audio(file_path: str):
     rms_db = 20 * np.log10(max(rms, 1e-9))
 
     # -----------------------
-    # Frequency bands
+    # Frequency bands removed 20260815
+    # -----------------------
+    #stft = np.abs(librosa.stft(y_mono))
+    #freqs = librosa.fft_frequencies(sr=sr)
+    #low = float(stft[freqs < 80].mean())
+    #mid = float(stft[(freqs >= 80) & (freqs < 2000)].mean())
+    #high = float(stft[freqs >= 2000].mean())
+    #total = max(low + mid + high, 1e-9)
+    # -----------------------
+    # Frequency bands added 20260815
     # -----------------------
     stft = np.abs(librosa.stft(y_mono))
     freqs = librosa.fft_frequencies(sr=sr)
-    low = float(stft[freqs < 80].mean())
-    mid = float(stft[(freqs >= 80) & (freqs < 2000)].mean())
-    high = float(stft[freqs >= 2000].mean())
-    total = max(low + mid + high, 1e-9)
-
+    
+    low_mask = freqs < 80
+    mid_mask = (freqs >= 80) & (freqs < 2000)
+    high_mask = freqs >= 2000
+    
+    low = float(np.mean(stft[low_mask])) if np.any(low_mask) else 0.0
+    mid = float(np.mean(stft[mid_mask])) if np.any(mid_mask) else 0.0
+    high = float(np.mean(stft[high_mask])) if np.any(high_mask) else 0.0
+    
+    total = low + mid + high
+    
+    if total <= 1e-12:
+        freq_balance = {
+            "low": 0.0,
+            "mid": 0.0,
+            "high": 0.0,
+        }
+    else:
+        freq_balance = {
+            "low": round((low / total) * 100, 1),
+            "mid": round((mid / total) * 100, 1),
+            "high": round((high / total) * 100, 1),
+        }
+    
     # -----------------------
     # Clipping detection
     # -----------------------
@@ -101,7 +174,7 @@ def analyze_audio(file_path: str):
     content_type = classify_content(loudness, lra, freq_balance)
 
     # -----------------------
-    # Distribution simulation
+    # Distribution simulation added channel count 20260815
     # -----------------------
     distribution_simulation = simulate_distribution(loudness, true_peak_db)
 
@@ -116,6 +189,7 @@ def analyze_audio(file_path: str):
         "stereo_balance": None if stereo_balance is None else round(stereo_balance, 2),
         "short_term_dynamic_range": None if short_term_dr is None else round(short_term_dr, 2),
         "content_type": content_type,
+        "channel_count": int(channel_count),
         "distribution_simulation": distribution_simulation
     }
 
