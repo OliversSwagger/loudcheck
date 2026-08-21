@@ -1,55 +1,1458 @@
 # audio_analysis.py
 
-import time
-import numpy as np
+import json
+import shutil
+import subprocess
+
 import librosa
-import pyloudnorm as pyln
-from scipy.signal import resample
+import numpy as np
+
+from scipy import signal
 
 
-def analyze_audio(file_path: str):
-    """
-    LoudCheck audio analysis engine.
+# =============================================================
+# BS.1770 CONSTANTS
+# =============================================================
 
-    Handles:
-    - Mono audio
-    - Stereo audio
-    - Multichannel audio (3+ channels)
-    - Integrated LUFS
-    - Loudness Range
-    - True Peak
-    - RMS
-    - PLR
-    - Frequency balance
-    - Clipping detection
-    - Short-term dynamic range
-    - Content classification
-    - Distribution simulation
+LOUDNESS_OFFSET = -0.691
 
-    Audio files are analyzed from the supplied file path.
-    """
+ABSOLUTE_GATE_LKFS = -70.0
+RELATIVE_GATE_OFFSET_DB = -10.0
 
-    # =========================================================
-    # TOTAL ANALYSIS TIMER
-    # =========================================================
+LOUDNESS_BLOCK_SECONDS = 0.400
+LOUDNESS_HOP_SECONDS = 0.100
 
-    analysis_start = time.perf_counter()
+SHORT_TERM_WINDOW_SECONDS = 3.0
 
-    def timer(label, start):
-        elapsed = time.perf_counter() - start
+MIN_TRUE_PEAK_OVERSAMPLE = 4
+MIN_TRUE_PEAK_SAMPLE_RATE = 192000
+
+
+# =============================================================
+# CHANNEL WEIGHTS
+# =============================================================
+
+CONVENTIONAL_CHANNEL_WEIGHTS = {
+
+    1: np.array(
+        [1.0],
+        dtype=np.float64
+    ),
+
+    2: np.array(
+        [1.0, 1.0],
+        dtype=np.float64
+    ),
+
+    3: np.array(
+        [1.0, 1.0, 1.0],
+        dtype=np.float64
+    ),
+
+    4: np.array(
+        [1.0, 1.0, 1.41, 1.41],
+        dtype=np.float64
+    ),
+
+    5: np.array(
+        [1.0, 1.0, 1.0, 1.41, 1.41],
+        dtype=np.float64
+    ),
+
+    6: np.array(
+        [1.0, 1.0, 1.0, 0.0, 1.41, 1.41],
+        dtype=np.float64
+    ),
+
+    7: np.array(
+        [1.0, 1.0, 1.0, 1.41, 1.41, 1.41, 1.41],
+        dtype=np.float64
+    ),
+
+    8: np.array(
+        [1.0, 1.0, 1.0, 0.0, 1.41, 1.41, 1.41, 1.41],
+        dtype=np.float64
+    )
+}
+
+
+# =============================================================
+# ITU COMPLIANCE CHANNEL CONFIGURATIONS
+# =============================================================
+
+ITU_CHANNEL_WEIGHTS = {
+
+    "itu_10": np.array(
+        [
+            1.00,
+            1.00,
+            1.00,
+            0.00,
+            1.41,
+            1.41,
+            1.00,
+            1.00,
+            1.00,
+            1.00
+        ],
+        dtype=np.float64
+    ),
+
+    "itu_12": np.array(
+        [
+            1.00,
+            1.00,
+            1.00,
+            0.00,
+            1.41,
+            1.41,
+            1.00,
+            1.00,
+            1.00,
+            1.00,
+            1.00,
+            1.00
+        ],
+        dtype=np.float64
+    ),
+
+    "itu_24": np.array(
+        [
+            1.41,
+            1.41,
+            1.00,
+            0.00,
+            1.00,
+            1.00,
+            1.00,
+            1.00,
+            1.00,
+            0.00,
+            1.41,
+            1.41,
+            1.00,
+            1.00,
+            1.00,
+            1.00,
+            1.00,
+            1.00,
+            1.00,
+            1.00,
+            1.00,
+            1.00,
+            1.00,
+            1.00
+        ],
+        dtype=np.float64
+    )
+}
+
+
+# =============================================================
+# ADVANCED LAYOUTS
+# =============================================================
+
+ADVANCED_CHANNEL_WEIGHTS = {
+
+    "7.1.4": np.array(
+        [
+            1.0,
+            1.0,
+            1.0,
+            0.0,
+            1.0,
+            1.0,
+            1.41,
+            1.41,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ],
+        dtype=np.float64
+    )
+}
+
+
+# =============================================================
+# NORMALISE CHANNEL LAYOUT
+# =============================================================
+
+def normalize_channel_layout(
+    channel_layout: str | None
+) -> str | None:
+
+    if channel_layout is None:
+        return None
+
+    value = str(
+        channel_layout
+    ).strip().lower()
+
+    aliases = {
+
+        "mono": "mono",
+        "1.0": "mono",
+
+        "stereo": "stereo",
+        "2.0": "stereo",
+
+        "5.1": "5.1",
+
+        "7.1": "7.1",
+
+        "7.1.4": "7.1.4",
+        "7_1_4": "7.1.4",
+        "7-1-4": "7.1.4",
+
+        "itu_10": "itu_10",
+        "itu-10": "itu_10",
+
+        "itu_12": "itu_12",
+        "itu-12": "itu_12",
+
+        "itu_24": "itu_24",
+        "itu-24": "itu_24",
+
+        "24ch": "itu_24",
+        "24_channel": "itu_24",
+        "24-channel": "itu_24"
+    }
+
+    return aliases.get(
+        value,
+        value
+    )
+
+
+# =============================================================
+# FFPROBE CHANNEL LAYOUT DISCOVERY
+# =============================================================
+
+def detect_channel_layout(
+    file_path: str
+) -> str | None:
+
+    ffprobe = shutil.which(
+        "ffprobe"
+    )
+
+    if ffprobe is None:
 
         print(
-            f"TIMER: {label}: {elapsed:.3f} seconds",
+            "DEBUG: ffprobe not available; "
+            "channel layout metadata cannot be detected.",
             flush=True
         )
 
-        return time.perf_counter()
+        return None
+
+    command = [
+
+        ffprobe,
+
+        "-v",
+        "error",
+
+        "-select_streams",
+        "a:0",
+
+        "-show_entries",
+        "stream=channel_layout",
+
+        "-of",
+        "json",
+
+        file_path
+    ]
+
+    try:
+
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True
+        )
+
+        data = json.loads(
+            completed.stdout
+        )
+
+        streams = data.get(
+            "streams",
+            []
+        )
+
+        if not streams:
+            return None
+
+        layout = streams[0].get(
+            "channel_layout"
+        )
+
+        if not layout:
+            return None
+
+        return normalize_channel_layout(
+            layout
+        )
+
+    except Exception as exc:
+
+        print(
+            "WARNING: Unable to detect channel layout:",
+            exc,
+            flush=True
+        )
+
+        return None
+
+
+# =============================================================
+# CHANNEL WEIGHTS
+# =============================================================
+
+def get_channel_weights(
+    channel_count: int,
+    channel_layout: str | None = None
+) -> np.ndarray:
+
+    layout = normalize_channel_layout(
+        channel_layout
+    )
+
+    if layout in ADVANCED_CHANNEL_WEIGHTS:
+
+        weights = ADVANCED_CHANNEL_WEIGHTS[
+            layout
+        ]
+
+        if len(weights) != channel_count:
+
+            raise ValueError(
+                f"Channel layout '{layout}' requires "
+                f"{len(weights)} channels, but the file "
+                f"contains {channel_count}."
+            )
+
+        return weights.copy()
+
+    if layout in ITU_CHANNEL_WEIGHTS:
+
+        weights = ITU_CHANNEL_WEIGHTS[
+            layout
+        ]
+
+        if len(weights) != channel_count:
+
+            raise ValueError(
+                f"Channel layout '{layout}' requires "
+                f"{len(weights)} channels, but the file "
+                f"contains {channel_count}."
+            )
+
+        return weights.copy()
+
+    if layout == "mono":
+
+        if channel_count != 1:
+
+            raise ValueError(
+                "Mono layout requires exactly 1 channel."
+            )
+
+        return np.array(
+            [1.0],
+            dtype=np.float64
+        )
+
+    if layout == "stereo":
+
+        if channel_count != 2:
+
+            raise ValueError(
+                "Stereo layout requires exactly 2 channels."
+            )
+
+        return np.array(
+            [1.0, 1.0],
+            dtype=np.float64
+        )
+
+    if layout == "5.1":
+
+        if channel_count != 6:
+
+            raise ValueError(
+                "5.1 layout requires exactly 6 channels."
+            )
+
+        return CONVENTIONAL_CHANNEL_WEIGHTS[
+            6
+        ].copy()
+
+    if layout == "7.1":
+
+        if channel_count != 8:
+
+            raise ValueError(
+                "7.1 layout requires exactly 8 channels."
+            )
+
+        return CONVENTIONAL_CHANNEL_WEIGHTS[
+            8
+        ].copy()
+
+    if layout is None:
+
+        if channel_count in CONVENTIONAL_CHANNEL_WEIGHTS:
+
+            return CONVENTIONAL_CHANNEL_WEIGHTS[
+                channel_count
+            ].copy()
+
+        if channel_count == 10:
+
+            print(
+                "DEBUG: Using ITU 10-channel compliance layout.",
+                flush=True
+            )
+
+            return ITU_CHANNEL_WEIGHTS[
+                "itu_10"
+            ].copy()
+
+        if channel_count == 12:
+
+            print(
+                "DEBUG: Using ITU 12-channel compliance layout.",
+                flush=True
+            )
+
+            return ITU_CHANNEL_WEIGHTS[
+                "itu_12"
+            ].copy()
+
+        if channel_count == 24:
+
+            print(
+                "DEBUG: Using ITU 24-channel compliance layout.",
+                flush=True
+            )
+
+            return ITU_CHANNEL_WEIGHTS[
+                "itu_24"
+            ].copy()
+
+        if channel_count > 8:
+
+            return np.ones(
+                channel_count,
+                dtype=np.float64
+            )
+
+        raise ValueError(
+            f"Unsupported channel count: {channel_count}."
+        )
+
+    raise ValueError(
+        f"Unsupported channel layout '{channel_layout}' "
+        f"for {channel_count} channels."
+    )
+
+
+# =============================================================
+# K-WEIGHTING
+# =============================================================
+
+def _k_weighting_coefficients(
+    sample_rate: int
+):
+
+    fs = float(
+        sample_rate
+    )
+
+    if fs <= 0:
+
+        raise ValueError(
+            "Sample rate must be greater than zero."
+        )
+
+    f0 = 1681.974450955533
+
+    q = 0.7071752369554196
+
+    gain_db = 3.999843853973347
+
+    w0 = 2.0 * np.pi * f0
+
+    gain = (
+        10.0
+        **
+        (
+            gain_db
+            /
+            20.0
+        )
+    )
+
+    sqrt_gain = np.sqrt(
+        gain
+    )
+
+    b1_analog = np.array(
+        [
+            gain,
+            gain
+            *
+            w0
+            /
+            (
+                q
+                *
+                sqrt_gain
+            ),
+            gain
+            *
+            w0
+            **
+            2
+        ],
+        dtype=np.float64
+    )
+
+    a1_analog = np.array(
+        [
+            1.0,
+            w0
+            *
+            sqrt_gain
+            /
+            q,
+            gain
+            *
+            w0
+            **
+            2
+        ],
+        dtype=np.float64
+    )
+
+    b1, a1 = signal.bilinear(
+        b1_analog,
+        a1_analog,
+        fs=fs
+    )
+
+    f0_rlb = 38.13547087613982
+
+    q_rlb = 0.5003270373253953
+
+    w0_rlb = 2.0 * np.pi * f0_rlb
+
+    b2_analog = np.array(
+        [
+            1.0,
+            0.0,
+            0.0
+        ],
+        dtype=np.float64
+    )
+
+    a2_analog = np.array(
+        [
+            1.0,
+            w0_rlb
+            /
+            q_rlb,
+            w0_rlb
+            **
+            2
+        ],
+        dtype=np.float64
+    )
+
+    b2, a2 = signal.bilinear(
+        b2_analog,
+        a2_analog,
+        fs=fs
+    )
+
+    return (
+        b1,
+        a1,
+        b2,
+        a2
+    )
+
+
+def _k_weight_channel(
+    channel: np.ndarray,
+    sample_rate: int
+) -> np.ndarray:
+
+    channel = np.asarray(
+        channel,
+        dtype=np.float64
+    )
+
+    if channel.size == 0:
+
+        return channel.copy()
+
+    b1, a1, b2, a2 = (
+        _k_weighting_coefficients(
+            sample_rate
+        )
+    )
+
+    sos1 = signal.tf2sos(
+        b1,
+        a1
+    )
+
+    sos2 = signal.tf2sos(
+        b2,
+        a2
+    )
+
+    filtered = signal.sosfilt(
+        sos1,
+        channel
+    )
+
+    filtered = signal.sosfilt(
+        sos2,
+        filtered
+    )
+
+    return np.asarray(
+        filtered,
+        dtype=np.float64
+    )
+
+
+def k_weight_channels(
+    channels: np.ndarray,
+    sample_rate: int
+) -> np.ndarray:
+
+    channels = np.asarray(
+        channels,
+        dtype=np.float64
+    )
+
+    if channels.ndim != 2:
+
+        raise ValueError(
+            "Expected audio with shape "
+            "(channels, samples)."
+        )
+
+    filtered = np.empty_like(
+        channels,
+        dtype=np.float64
+    )
+
+    for channel_index in range(
+        channels.shape[0]
+    ):
+
+        filtered[channel_index] = (
+            _k_weight_channel(
+                channels[channel_index],
+                sample_rate
+            )
+        )
+
+    return filtered
+
+
+# =============================================================
+# LOUDNESS BLOCKS
+# =============================================================
+
+def _generate_loudness_blocks(
+    sample_count: int,
+    sample_rate: int
+):
+
+    block_length = max(
+        1,
+        int(
+            round(
+                sample_rate
+                *
+                LOUDNESS_BLOCK_SECONDS
+            )
+        )
+    )
+
+    hop_length = max(
+        1,
+        int(
+            round(
+                sample_rate
+                *
+                LOUDNESS_HOP_SECONDS
+            )
+        )
+    )
+
+    blocks = []
+
+    start = 0
+
+    while (
+        start
+        +
+        block_length
+        <=
+        sample_count
+    ):
+
+        end = (
+            start
+            +
+            block_length
+        )
+
+        blocks.append(
+            (
+                start,
+                end
+            )
+        )
+
+        start += hop_length
+
+    return blocks
+
+
+# =============================================================
+# BLOCK ENERGY
+# =============================================================
+
+def _calculate_weighted_energy(
+    block: np.ndarray,
+    weights: np.ndarray
+) -> float:
+
+    mean_square = np.mean(
+        block ** 2,
+        axis=1
+    )
+
+    weighted_energy = float(
+        np.sum(
+            weights
+            *
+            mean_square
+        )
+    )
+
+    return weighted_energy
+
+
+def _energy_to_loudness(
+    energy: float
+) -> float:
+
+    if energy <= 0.0:
+
+        return -np.inf
+
+    return float(
+        LOUDNESS_OFFSET
+        +
+        10.0
+        *
+        np.log10(
+            energy
+        )
+    )
+
+
+# =============================================================
+# LOUDNESS BLOCK CALCULATION
+# =============================================================
+
+def calculate_loudness_blocks(
+    channels: np.ndarray,
+    sample_rate: int,
+    channel_layout: str | None = None
+):
+
+    channels = np.asarray(
+        channels,
+        dtype=np.float64
+    )
+
+    if channels.ndim != 2:
+
+        raise ValueError(
+            "Expected channels x samples."
+        )
+
+    weights = get_channel_weights(
+        channels.shape[0],
+        channel_layout
+    )
+
+    k_weighted = k_weight_channels(
+        channels,
+        sample_rate
+    )
+
+    blocks = _generate_loudness_blocks(
+        channels.shape[1],
+        sample_rate
+    )
+
+    loudness_values = []
+
+    for start, end in blocks:
+
+        block = k_weighted[
+            :,
+            start:end
+        ]
+
+        energy = _calculate_weighted_energy(
+            block,
+            weights
+        )
+
+        loudness_values.append(
+            _energy_to_loudness(
+                energy
+            )
+        )
+
+    return loudness_values
+
+
+# =============================================================
+# INTEGRATED LOUDNESS
+# =============================================================
+
+def calculate_integrated_loudness(
+    channels: np.ndarray,
+    sample_rate: int,
+    channel_layout: str | None = None
+) -> float:
+
+    channels = np.asarray(
+        channels,
+        dtype=np.float64
+    )
+
+    if channels.ndim != 2:
+
+        raise ValueError(
+            "Expected channels x samples."
+        )
+
+    weights = get_channel_weights(
+        channels.shape[0],
+        channel_layout
+    )
+
+    k_weighted = k_weight_channels(
+        channels,
+        sample_rate
+    )
+
+    blocks = _generate_loudness_blocks(
+        channels.shape[1],
+        sample_rate
+    )
+
+    if not blocks:
+
+        raise ValueError(
+            "Audio is too short for a 400 ms "
+            "BS.1770 loudness block."
+        )
+
+    block_energies = []
+
+    block_loudness = []
+
+    for start, end in blocks:
+
+        block = k_weighted[
+            :,
+            start:end
+        ]
+
+        energy = _calculate_weighted_energy(
+            block,
+            weights
+        )
+
+        block_energies.append(
+            energy
+        )
+
+        block_loudness.append(
+            _energy_to_loudness(
+                energy
+            )
+        )
+
+    block_energies = np.asarray(
+        block_energies,
+        dtype=np.float64
+    )
+
+    block_loudness = np.asarray(
+        block_loudness,
+        dtype=np.float64
+    )
+
+    absolute_mask = (
+        block_loudness
+        >=
+        ABSOLUTE_GATE_LKFS
+    )
+
+    if not np.any(
+        absolute_mask
+    ):
+
+        return -np.inf
+
+    absolute_energies = (
+        block_energies[
+            absolute_mask
+        ]
+    )
+
+    absolute_loudness = _energy_to_loudness(
+        float(
+            np.mean(
+                absolute_energies
+            )
+        )
+    )
+
+    relative_threshold = (
+        absolute_loudness
+        +
+        RELATIVE_GATE_OFFSET_DB
+    )
+
+    relative_mask = (
+        absolute_mask
+        &
+        (
+            block_loudness
+            >=
+            relative_threshold
+        )
+    )
+
+    if not np.any(
+        relative_mask
+    ):
+
+        return float(
+            absolute_loudness
+        )
+
+    gated_energies = (
+        block_energies[
+            relative_mask
+        ]
+    )
+
+    return _energy_to_loudness(
+        float(
+            np.mean(
+                gated_energies
+            )
+        )
+    )
+
+
+# =============================================================
+# MOMENTARY LOUDNESS
+# =============================================================
+
+def calculate_momentary_loudness(
+    channels: np.ndarray,
+    sample_rate: int,
+    channel_layout: str | None = None
+):
+
+    channels = np.asarray(
+        channels,
+        dtype=np.float64
+    )
+
+    if channels.ndim != 2:
+
+        raise ValueError(
+            "Expected channels x samples."
+        )
+
+    weights = get_channel_weights(
+        channels.shape[0],
+        channel_layout
+    )
+
+    k_weighted = k_weight_channels(
+        channels,
+        sample_rate
+    )
+
+    block_length = max(
+        1,
+        int(
+            round(
+                sample_rate
+                *
+                LOUDNESS_BLOCK_SECONDS
+            )
+        )
+    )
+
+    hop_length = max(
+        1,
+        int(
+            round(
+                sample_rate
+                *
+                LOUDNESS_HOP_SECONDS
+            )
+        )
+    )
+
+    results = []
+
+    start = 0
+
+    while (
+        start
+        +
+        block_length
+        <=
+        channels.shape[1]
+    ):
+
+        end = (
+            start
+            +
+            block_length
+        )
+
+        block = k_weighted[
+            :,
+            start:end
+        ]
+
+        energy = _calculate_weighted_energy(
+            block,
+            weights
+        )
+
+        loudness = _energy_to_loudness(
+            energy
+        )
+
+        results.append(
+            {
+                "time_seconds": round(
+                    start
+                    /
+                    sample_rate,
+                    3
+                ),
+                "lufs": float(
+                    loudness
+                )
+            }
+        )
+
+        start += hop_length
+
+    return results
+
+
+# =============================================================
+# SHORT-TERM LOUDNESS
+# =============================================================
+
+def calculate_short_term_loudness(
+    channels: np.ndarray,
+    sample_rate: int,
+    channel_layout: str | None = None
+):
+
+    channels = np.asarray(
+        channels,
+        dtype=np.float64
+    )
+
+    if channels.ndim != 2:
+
+        raise ValueError(
+            "Expected channels x samples."
+        )
+
+    weights = get_channel_weights(
+        channels.shape[0],
+        channel_layout
+    )
+
+    k_weighted = k_weight_channels(
+        channels,
+        sample_rate
+    )
+
+    window_length = max(
+        1,
+        int(
+            round(
+                sample_rate
+                *
+                SHORT_TERM_WINDOW_SECONDS
+            )
+        )
+    )
+
+    hop_length = max(
+        1,
+        int(
+            round(
+                sample_rate
+                *
+                LOUDNESS_HOP_SECONDS
+            )
+        )
+    )
+
+    results = []
+
+    start = 0
+
+    while (
+        start
+        +
+        window_length
+        <=
+        channels.shape[1]
+    ):
+
+        end = (
+            start
+            +
+            window_length
+        )
+
+        block = k_weighted[
+            :,
+            start:end
+        ]
+
+        energy = _calculate_weighted_energy(
+            block,
+            weights
+        )
+
+        loudness = _energy_to_loudness(
+            energy
+        )
+
+        results.append(
+            {
+                "time_seconds": round(
+                    start
+                    /
+                    sample_rate,
+                    3
+                ),
+                "lufs": float(
+                    loudness
+                )
+            }
+        )
+
+        start += hop_length
+
+    return results
+
+
+# =============================================================
+# LOUDNESS RANGE
+# =============================================================
+
+def calculate_loudness_range(
+    channels: np.ndarray,
+    sample_rate: int,
+    channel_layout: str | None = None
+) -> float:
+
+    values = calculate_short_term_loudness(
+        channels,
+        sample_rate,
+        channel_layout
+    )
+
+    values = np.asarray(
+        [
+            item["lufs"]
+            for item in values
+        ],
+        dtype=np.float64
+    )
+
+    values = values[
+        np.isfinite(
+            values
+        )
+    ]
+
+    values = values[
+        values >= ABSOLUTE_GATE_LKFS
+    ]
+
+    if values.size < 2:
+
+        return 0.0
+
+    energies = (
+        10.0
+        **
+        (
+            (
+                values
+                -
+                LOUDNESS_OFFSET
+            )
+            /
+            10.0
+        )
+    )
+
+    absolute_loudness = _energy_to_loudness(
+        float(
+            np.mean(
+                energies
+            )
+        )
+    )
+
+    relative_threshold = (
+        absolute_loudness
+        -
+        10.0
+    )
+
+    values = values[
+        values >= relative_threshold
+    ]
+
+    if values.size < 2:
+
+        return 0.0
+
+    low = float(
+        np.percentile(
+            values,
+            10.0
+        )
+    )
+
+    high = float(
+        np.percentile(
+            values,
+            95.0
+        )
+    )
+
+    return max(
+        0.0,
+        high - low
+    )
+
+
+# =============================================================
+# TRUE PEAK
+# =============================================================
+
+def _true_peak_oversample_factor(
+    sample_rate: int
+) -> int:
+
+    return max(
+        MIN_TRUE_PEAK_OVERSAMPLE,
+        int(
+            np.ceil(
+                MIN_TRUE_PEAK_SAMPLE_RATE
+                /
+                sample_rate
+            )
+        )
+    )
+
+
+def calculate_true_peak(
+    channels: np.ndarray,
+    sample_rate: int
+) -> float:
+
+    channels = np.asarray(
+        channels,
+        dtype=np.float64
+    )
+
+    if channels.ndim != 2:
+
+        raise ValueError(
+            "Expected channels x samples."
+        )
+
+    factor = _true_peak_oversample_factor(
+        sample_rate
+    )
+
+    highest_peak = 0.0
+
+    for channel_index in range(
+        channels.shape[0]
+    ):
+
+        channel = channels[
+            channel_index
+        ]
+
+        if channel.size == 0:
+            continue
+
+        upsampled = signal.resample_poly(
+            channel,
+            factor,
+            1
+        )
+
+        upsampled = np.asarray(
+            upsampled,
+            dtype=np.float64
+        )
+
+        upsampled = np.nan_to_num(
+            upsampled,
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0
+        )
+
+        peak = float(
+            np.max(
+                np.abs(
+                    upsampled
+                )
+            )
+        )
+
+        highest_peak = max(
+            highest_peak,
+            peak
+        )
+
+    if highest_peak <= 1e-12:
+
+        return -120.0
+
+    return float(
+        20.0
+        *
+        np.log10(
+            highest_peak
+        )
+    )
+
+
+# =============================================================
+# CHANNEL LAYOUT RESOLUTION
+# =============================================================
+
+def resolve_channel_layout(
+    file_path: str,
+    channel_count: int,
+    requested_layout: str | None = None
+) -> tuple[str, bool]:
+
+    if requested_layout is not None:
+
+        normalized = normalize_channel_layout(
+            requested_layout
+        )
+
+        return normalized, True
+
+    detected_layout = (
+        detect_channel_layout(
+            file_path
+        )
+    )
+
+    if detected_layout:
+
+        return detected_layout, True
+
+    if channel_count == 1:
+
+        return "mono", True
+
+    if channel_count == 2:
+
+        return "stereo", True
+
+    if channel_count == 6:
+
+        return "5.1", True
+
+    if channel_count == 8:
+
+        return "7.1", True
+
+    if channel_count == 10:
+
+        return "itu_10", True
+
+    if channel_count == 12:
+
+        return "itu_12", True
+
+    if channel_count == 24:
+
+        return "itu_24", True
+
+    generic_layout = (
+        f"generic_{channel_count}ch"
+    )
+
+    return generic_layout, False
+
+
+# =============================================================
+# AUDIO ANALYSIS
+# =============================================================
+
+def analyze_audio(
+    file_path: str,
+    channel_layout: str | None = None
+):
 
     # =========================================================
-    # LOAD AUDIO
+    # LOAD
     # =========================================================
-
-    timer_start = time.perf_counter()
 
     try:
 
@@ -57,11 +1460,6 @@ def analyze_audio(file_path: str):
             file_path,
             sr=None,
             mono=False
-        )
-
-        timer(
-            "LOAD AUDIO",
-            timer_start
         )
 
     except Exception as exc:
@@ -88,7 +1486,7 @@ def analyze_audio(file_path: str):
         )
 
     # =========================================================
-    # ENSURE CHANNELS x SAMPLES
+    # CHANNEL SHAPE
     # =========================================================
 
     if y.ndim == 1:
@@ -112,24 +1510,6 @@ def analyze_audio(file_path: str):
         y.shape[1]
     )
 
-    print(
-        "Channel count:",
-        channel_count,
-        flush=True
-    )
-
-    print(
-        "Sample count:",
-        sample_count,
-        flush=True
-    )
-
-    print(
-        "Sample rate:",
-        sr,
-        flush=True
-    )
-
     if sample_count < sr:
 
         raise ValueError(
@@ -145,12 +1525,6 @@ def analyze_audio(file_path: str):
         np.isfinite(y)
     ):
 
-        print(
-            "WARNING: Invalid audio samples detected. "
-            "Replacing invalid values.",
-            flush=True
-        )
-
         y = np.nan_to_num(
             y,
             nan=0.0,
@@ -159,21 +1533,44 @@ def analyze_audio(file_path: str):
         )
 
     # =========================================================
-    # CHANNEL HANDLING
+    # RESOLVE CHANNEL LAYOUT
     # =========================================================
 
-    timer_start = time.perf_counter()
+    resolved_layout, layout_is_known = (
+        resolve_channel_layout(
+            file_path,
+            channel_count,
+            channel_layout
+        )
+    )
+
+    channel_layout = resolved_layout
+
+    # =========================================================
+    # VALIDATE CHANNEL WEIGHTS
+    # =========================================================
+
+    try:
+
+        weights = get_channel_weights(
+            channel_count,
+            channel_layout
+        )
+
+    except Exception as exc:
+
+        raise ValueError(
+            f"Unable to determine a valid channel layout "
+            f"for loudness measurement: {exc}"
+        )
+
+    # =========================================================
+    # LOUDCHECK MONO REPRESENTATION
+    # =========================================================
 
     if channel_count == 1:
 
-        # -----------------------------------------------------
-        # MONO
-        # -----------------------------------------------------
-
         stereo_available = False
-
-        # Always numeric because downstream code may
-        # perform mathematical operations on this value.
 
         stereo_balance = 0.0
 
@@ -181,13 +1578,10 @@ def analyze_audio(file_path: str):
 
     elif channel_count == 2:
 
-        # -----------------------------------------------------
-        # STEREO
-        # -----------------------------------------------------
-
         stereo_available = True
 
         left = y[0]
+
         right = y[1]
 
         left_rms = float(
@@ -227,9 +1621,6 @@ def analyze_audio(file_path: str):
 
             stereo_balance = 0.0
 
-        # Combine stereo channels for
-        # general loudness analysis.
-
         y_mono = np.mean(
             y,
             axis=0
@@ -237,135 +1628,46 @@ def analyze_audio(file_path: str):
 
     else:
 
-        # -----------------------------------------------------
-        # MULTICHANNEL
-        # -----------------------------------------------------
-        #
-        # Examples:
-        # 5.1
-        # 7.1
-        # immersive / multichannel
-        #
-        # Stereo balance does not apply.
-        #
-        # We still return 0.0 so downstream numerical
-        # calculations remain safe.
-        # -----------------------------------------------------
-
         stereo_available = False
 
         stereo_balance = 0.0
-
-        # Combine ALL channels.
 
         y_mono = np.mean(
             y,
             axis=0
         )
 
-    timer(
-        "CHANNEL HANDLING",
-        timer_start
-    )
-
     # =========================================================
-    # VALIDATE ANALYSIS SIGNAL
+    # ORIGINAL AUDIO PEAK
     # =========================================================
 
-    timer_start = time.perf_counter()
-
-    y_mono = np.asarray(
-        y_mono,
-        dtype=np.float64
-    )
-
-    y_mono = np.nan_to_num(
-        y_mono,
-        nan=0.0,
-        posinf=0.0,
-        neginf=0.0
-    )
-
-    print(
-        "y_mono type:",
-        type(y_mono),
-        flush=True
-    )
-
-    print(
-        "y_mono shape:",
-        y_mono.shape,
-        flush=True
-    )
-
-    print(
-        "y_mono is None:",
-        y_mono is None,
-        flush=True
-    )
-
-    # =========================================================
-    # CHECK FOR SILENCE
-    # =========================================================
-
-    print(
-        "DEBUG: before peak",
-        flush=True
-    )
-
-    peak_linear = float(
+    peak_linear_all_channels = float(
         np.max(
-            np.abs(y_mono)
+            np.abs(
+                y
+            )
         )
     )
 
-    print(
-        "DEBUG: after peak:",
-        peak_linear,
-        flush=True
-    )
-
-    if peak_linear <= 1e-12:
+    if peak_linear_all_channels <= 1e-12:
 
         raise ValueError(
             "Audio contains no measurable signal. "
             "The file may be silent or empty."
         )
 
-    timer(
-        "VALIDATE + PEAK",
-        timer_start
-    )
-
     # =========================================================
-    # LOUDNESS METER
+    # INTEGRATED LOUDNESS
     # =========================================================
-
-    meter = pyln.Meter(
-        sr
-    )
-
-    # =========================================================
-    # INTEGRATED LUFS
-    # =========================================================
-
-    timer_start = time.perf_counter()
 
     try:
 
-        print(
-            "DEBUG: before LUFS",
-            flush=True
-        )
-
-        loudness = meter.integrated_loudness(
-            y_mono
-        )
-
-        print(
-            "DEBUG: LUFS:",
-            loudness,
-            flush=True
+        loudness = (
+            calculate_integrated_loudness(
+                y,
+                sr,
+                channel_layout
+            )
         )
 
     except Exception as exc:
@@ -377,49 +1679,38 @@ def analyze_audio(file_path: str):
     if (
         loudness is None
         or
-        not np.isfinite(loudness)
+        not np.isfinite(
+            loudness
+        )
     ):
 
         raise ValueError(
-            "Unable to calculate a valid integrated loudness value."
+            "Unable to calculate a valid integrated "
+            "loudness value."
         )
 
     loudness = float(
         loudness
     )
 
-    timer(
-        "INTEGRATED LUFS",
-        timer_start
-    )
-
     # =========================================================
-    # LOUDNESS RANGE
+    # LRA
     # =========================================================
-
-    timer_start = time.perf_counter()
 
     try:
 
-        print(
-            "DEBUG: before LRA",
-            flush=True
-        )
-
-        lra = meter.loudness_range(
-            y_mono
-        )
-
-        print(
-            "DEBUG: LRA:",
-            lra,
-            flush=True
+        lra = calculate_loudness_range(
+            y,
+            sr,
+            channel_layout
         )
 
         if (
             lra is None
             or
-            not np.isfinite(lra)
+            not np.isfinite(
+                lra
+            )
         ):
 
             lra = 0.0
@@ -440,81 +1731,16 @@ def analyze_audio(file_path: str):
 
         lra = 0.0
 
-    timer(
-        "LOUDNESS RANGE",
-        timer_start
-    )
-
     # =========================================================
     # TRUE PEAK
     # =========================================================
-    #
-    # Upsample toward >=192 kHz.
-    # =========================================================
-
-    timer_start = time.perf_counter()
 
     try:
 
-        upsample_factor = max(
-            4,
-            int(
-                np.ceil(
-                    192000 / sr
-                )
-            )
+        true_peak_db = calculate_true_peak(
+            y,
+            sr
         )
-
-        target_length = int(
-            len(y_mono)
-            *
-            upsample_factor
-        )
-
-        print(
-            "DEBUG: True peak upsample factor:",
-            upsample_factor,
-            flush=True
-        )
-
-        y_upsampled = resample(
-            y_mono,
-            target_length
-        )
-
-        y_upsampled = np.asarray(
-            y_upsampled,
-            dtype=np.float64
-        )
-
-        y_upsampled = np.nan_to_num(
-            y_upsampled,
-            nan=0.0,
-            posinf=0.0,
-            neginf=0.0
-        )
-
-        peak_linear_upsampled = float(
-            np.max(
-                np.abs(
-                    y_upsampled
-                )
-            )
-        )
-
-        if peak_linear_upsampled <= 1e-12:
-
-            true_peak_db = -120.0
-
-        else:
-
-            true_peak_db = float(
-                20
-                *
-                np.log10(
-                    peak_linear_upsampled
-                )
-            )
 
     except Exception as exc:
 
@@ -522,22 +1748,9 @@ def analyze_audio(file_path: str):
             f"Unable to calculate true peak: {exc}"
         )
 
-    print(
-        "DEBUG: True Peak:",
-        true_peak_db,
-        flush=True
-    )
-
-    timer(
-        "TRUE PEAK",
-        timer_start
-    )
-
     # =========================================================
     # RMS
     # =========================================================
-
-    timer_start = time.perf_counter()
 
     try:
 
@@ -562,23 +1775,16 @@ def analyze_audio(file_path: str):
     else:
 
         rms_db = float(
-            20
+            20.0
             *
             np.log10(
                 rms
             )
         )
 
-    timer(
-        "RMS",
-        timer_start
-    )
-
     # =========================================================
     # FREQUENCY ANALYSIS
     # =========================================================
-
-    timer_start = time.perf_counter()
 
     try:
 
@@ -612,7 +1818,9 @@ def analyze_audio(file_path: str):
                     stft[low_mask]
                 )
             )
-            if np.any(low_mask)
+            if np.any(
+                low_mask
+            )
             else 0.0
         )
 
@@ -622,7 +1830,9 @@ def analyze_audio(file_path: str):
                     stft[mid_mask]
                 )
             )
-            if np.any(mid_mask)
+            if np.any(
+                mid_mask
+            )
             else 0.0
         )
 
@@ -632,7 +1842,9 @@ def analyze_audio(file_path: str):
                     stft[high_mask]
                 )
             )
-            if np.any(high_mask)
+            if np.any(
+                high_mask
+            )
             else 0.0
         )
 
@@ -657,35 +1869,29 @@ def analyze_audio(file_path: str):
             freq_balance = {
 
                 "low": round(
-                    (
-                        low
-                        /
-                        total
-                    )
+                    low
+                    /
+                    total
                     *
-                    100,
+                    100.0,
                     1
                 ),
 
                 "mid": round(
-                    (
-                        mid
-                        /
-                        total
-                    )
+                    mid
+                    /
+                    total
                     *
-                    100,
+                    100.0,
                     1
                 ),
 
                 "high": round(
-                    (
-                        high
-                        /
-                        total
-                    )
+                    high
+                    /
+                    total
                     *
-                    100,
+                    100.0,
                     1
                 )
             }
@@ -704,92 +1910,48 @@ def analyze_audio(file_path: str):
             "high": 0.0
         }
 
-    timer(
-        "FREQUENCY ANALYSIS",
-        timer_start
-    )
-
     # =========================================================
-    # CLIPPING DETECTION
+    # CLIPPING
     # =========================================================
-
-    timer_start = time.perf_counter()
 
     clipping = bool(
         np.max(
             np.abs(
-                y_mono
+                y
             )
         )
-        >= 1.0
-    )
-
-    timer(
-        "CLIPPING DETECTION",
-        timer_start
+        >=
+        1.0
     )
 
     # =========================================================
     # SHORT-TERM DYNAMIC RANGE
     # =========================================================
 
-    timer_start = time.perf_counter()
-
-    hop_len = max(
-        1,
-        int(sr)
+    short_term_values = (
+        calculate_short_term_loudness(
+            y,
+            sr,
+            channel_layout
+        )
     )
 
-    window_lufs = []
+    window_lufs = [
 
-    for start in range(
-        0,
-        len(y_mono),
-        hop_len
-    ):
+        float(
+            item["lufs"]
+        )
 
-        segment = y_mono[
-            start:
-            start + hop_len
-        ]
+        for item in short_term_values
 
-        if len(segment) == 0:
+        if np.isfinite(
+            item["lufs"]
+        )
+    ]
 
-            continue
-
-        if len(segment) < int(
-            sr * 0.4
-        ):
-
-            continue
-
-        try:
-
-            segment_lufs = (
-                meter.integrated_loudness(
-                    segment
-                )
-            )
-
-            if (
-                segment_lufs is not None
-                and
-                np.isfinite(
-                    segment_lufs
-                )
-            ):
-
-                window_lufs.append(
-                    float(
-                        segment_lufs
-                    )
-                )
-
-        except Exception:
-
-            continue
-
-    if len(window_lufs) >= 2:
+    if len(
+        window_lufs
+    ) >= 2:
 
         short_term_dr = float(
             max(
@@ -805,16 +1967,9 @@ def analyze_audio(file_path: str):
 
         short_term_dr = 0.0
 
-    timer(
-        "SHORT-TERM DYNAMIC RANGE",
-        timer_start
-    )
-
     # =========================================================
     # PLR
     # =========================================================
-
-    timer_start = time.perf_counter()
 
     if (
         np.isfinite(
@@ -836,16 +1991,9 @@ def analyze_audio(file_path: str):
 
         plr = 0.0
 
-    timer(
-        "PLR",
-        timer_start
-    )
-
     # =========================================================
     # CONTENT CLASSIFICATION
     # =========================================================
-
-    timer_start = time.perf_counter()
 
     content_type = classify_content(
         loudness,
@@ -853,16 +2001,9 @@ def analyze_audio(file_path: str):
         freq_balance
     )
 
-    timer(
-        "CONTENT CLASSIFICATION",
-        timer_start
-    )
-
     # =========================================================
     # DISTRIBUTION SIMULATION
     # =========================================================
-
-    timer_start = time.perf_counter()
 
     distribution_simulation = (
         simulate_distribution(
@@ -871,16 +2012,9 @@ def analyze_audio(file_path: str):
         )
     )
 
-    timer(
-        "DISTRIBUTION SIMULATION",
-        timer_start
-    )
-
     # =========================================================
-    # FINAL RESULT
+    # RESULT
     # =========================================================
-
-    timer_start = time.perf_counter()
 
     result = {
 
@@ -936,14 +2070,15 @@ def analyze_audio(file_path: str):
         "channel_count":
             channel_count,
 
+        "channel_layout":
+            channel_layout,
+
+        "channel_layout_known":
+            layout_is_known,
+
         "distribution_simulation":
             distribution_simulation
     }
-
-    timer(
-        "RESULT BUILD",
-        timer_start
-    )
 
     print(
         "DEBUG: Final analysis result:",
@@ -951,26 +2086,11 @@ def analyze_audio(file_path: str):
         flush=True
     )
 
-    # =========================================================
-    # TOTAL ANALYSIS TIME
-    # =========================================================
-
-    total_time = (
-        time.perf_counter()
-        -
-        analysis_start
-    )
-
-    print(
-        f"TIMER: TOTAL ANALYSIS: {total_time:.3f} seconds",
-        flush=True
-    )
-
     return result
 
 
 # =============================================================
-# AES-INSPIRED CONTENT CLASSIFICATION
+# CONTENT CLASSIFICATION
 # =============================================================
 
 def classify_content(
@@ -978,13 +2098,6 @@ def classify_content(
     lra,
     freq_balance
 ):
-
-    """
-    AES-inspired heuristic classification.
-
-    This is an analytical heuristic and should not be
-    presented as official AES certification.
-    """
 
     if lra > 14:
 
@@ -1018,23 +2131,14 @@ def simulate_distribution(
     true_peak
 ):
 
-    """
-    Estimate gain changes relative to reference loudness
-    targets.
-
-    These are simulations, not guarantees of actual platform
-    processing.
-    """
-
     platforms = {}
 
-    # =========================================================
+    # ---------------------------------------------------------
     # MUSIC STREAMING
-    # Reference: -14 LUFS
-    # =========================================================
+    # ---------------------------------------------------------
 
     delta = (
-        -14
+        -14.0
         -
         lufs
     )
@@ -1063,13 +2167,12 @@ def simulate_distribution(
             will_limit
     }
 
-    # =========================================================
+    # ---------------------------------------------------------
     # RADIO / SPEECH
-    # Reference: -18 LUFS
-    # =========================================================
+    # ---------------------------------------------------------
 
     delta_radio = (
-        -18
+        -18.0
         -
         lufs
     )
