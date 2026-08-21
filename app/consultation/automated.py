@@ -252,9 +252,4 @@ def generate_consultation(result):
         )
     })
 
-    print(
-        "DEBUG ACTIONS:",
-        actions
-    )
-
     return actions
